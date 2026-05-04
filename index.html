@@ -308,7 +308,7 @@
         </div>
     </div>
     <div id="galleryContainer" class="gallery">
-        <div class="loading-spinner">⏳ 正在从仓库读取 image 文件夹...</div>
+        <div class="loading-spinner">⏳ 正在从仓库读取目录...</div>
     </div>
     <footer>点击图片放大 · 滚轮缩放 · 拖拽移动 · 支持子文件夹</footer>
 </div>
@@ -330,7 +330,7 @@
 <script>
     (function(){
         let currentRepo = { owner: 'chen-feng888', repo: 'cf-image', branch: 'main' };
-        let currentPath = 'image';
+        let currentPath = '';
         let pathStack = [];
         let abortController = null;
         const commitTimeCache = new Map();
@@ -362,7 +362,8 @@
         }
 
         async function fetchGitHubContents(path) {
-            const apiUrl = `https://api.github.com/repos/${currentRepo.owner}/${currentRepo.repo}/contents/${path}?ref=${currentRepo.branch}`;
+            const encodedPath = path ? path.split('/').map(seg => encodeURIComponent(seg)).join('/') : '';
+            const apiUrl = `https://api.github.com/repos/${currentRepo.owner}/${currentRepo.repo}/contents/${encodedPath}?ref=${currentRepo.branch}`;
             try {
                 const response = await fetch(apiUrl);
                 if (!response.ok) {
@@ -407,18 +408,44 @@
             return `https://raw.githubusercontent.com/${currentRepo.owner}/${currentRepo.repo}/${currentRepo.branch}/${filePath}`;
         }
 
+        async function autoDetectImageFolder() {
+            const rootContents = await fetchGitHubContents('');
+            if (!rootContents) return null;
+            const folders = rootContents.filter(item => item.type === 'dir').map(item => item.name.toLowerCase());
+            const preferred = ['image', 'images', 'img', 'pictures', 'photos'];
+            for (let pref of preferred) {
+                const found = rootContents.find(item => item.type === 'dir' && item.name.toLowerCase() === pref);
+                if (found) return found.path;
+            }
+            const firstFolder = rootContents.find(item => item.type === 'dir');
+            return firstFolder ? firstFolder.path : null;
+        }
+
         async function renderCurrentDirectory() {
             if (!currentRepo.owner || !currentRepo.repo) {
                 gallery.innerHTML = `<div class="empty-state">⚠️ 仓库配置错误</div>`;
                 return;
             }
-            gallery.innerHTML = `<div class="loading-spinner">📂 正在加载 ${currentPath || '根目录'} ...</div>`;
+            if (currentPath === '') {
+                gallery.innerHTML = `<div class="loading-spinner">🔍 正在自动查找图片文件夹...</div>`;
+                const detected = await autoDetectImageFolder();
+                if (detected) {
+                    currentPath = detected;
+                    pathStack = [];
+                    renderCurrentDirectory();
+                } else {
+                    gallery.innerHTML = `<div class="empty-state">❌ 未找到任何文件夹。<br>请在仓库根目录创建 image 或 img 文件夹并上传图片。</div>`;
+                    updateBreadcrumb();
+                }
+                return;
+            }
+            gallery.innerHTML = `<div class="loading-spinner">📂 正在加载 ${currentPath} ...</div>`;
             if (abortController) abortController.abort();
             abortController = new AbortController();
 
             const contents = await fetchGitHubContents(currentPath);
             if (!contents) {
-                gallery.innerHTML = `<div class="empty-state">❌ 无法读取文件夹 "${currentPath}"<br>请检查仓库中是否存在该目录，且分支为 ${currentRepo.branch}</div>`;
+                gallery.innerHTML = `<div class="empty-state">❌ 无法读取文件夹 "${currentPath}"<br>请检查路径或分支</div>`;
                 updateBreadcrumb();
                 return;
             }
@@ -563,24 +590,21 @@
         }
 
         function getDisplayNameFromPath(path) {
-            if (!path || path === 'image') return 'image';
             const parts = path.split('/');
             return parts[parts.length - 1];
         }
 
         function updateBreadcrumb() {
+            if (!currentPath) {
+                breadcrumbDiv.innerHTML = '<span>📁 未选择</span>';
+                return;
+            }
+            const parts = currentPath.split('/');
             let fullSegments = [];
-            if (currentPath === 'image') {
-                fullSegments = [{ name: 'image', path: 'image' }];
-            } else {
-                fullSegments.push({ name: 'image', path: 'image' });
-                const relativePath = currentPath.replace(/^image\//, '');
-                const parts = relativePath.split('/');
-                let cumulative = 'image';
-                for (let part of parts) {
-                    cumulative += '/' + part;
-                    fullSegments.push({ name: part, path: cumulative });
-                }
+            let cumulative = '';
+            for (let i = 0; i < parts.length; i++) {
+                cumulative = i === 0 ? parts[i] : cumulative + '/' + parts[i];
+                fullSegments.push({ name: parts[i], path: cumulative });
             }
             let html = '';
             for (let i = 0; i < fullSegments.length; i++) {
@@ -591,26 +615,13 @@
                     html += `<span class="breadcrumb-item" data-path="${seg.path}">${escapeHtml(seg.name)}</span><span class="separator"> › </span>`;
                 }
             }
-            breadcrumbDiv.innerHTML = html || '<span>📁 image</span>';
+            breadcrumbDiv.innerHTML = html;
             document.querySelectorAll('.breadcrumb-item').forEach(el => {
                 el.addEventListener('click', async (e) => {
                     const targetPath = el.getAttribute('data-path');
                     if (targetPath && targetPath !== currentPath) {
-                        if (targetPath === 'image') {
-                            pathStack = [];
-                            currentPath = 'image';
-                        } else {
-                            const parts = targetPath.split('/');
-                            pathStack = [];
-                            let cumulative = 'image';
-                            for (let i = 1; i < parts.length; i++) {
-                                if (i < parts.length - 1) {
-                                    pathStack.push({ name: parts[i], path: cumulative });
-                                }
-                                cumulative += '/' + parts[i];
-                            }
-                            currentPath = targetPath;
-                        }
+                        pathStack = [];
+                        currentPath = targetPath;
                         await renderCurrentDirectory();
                     }
                 });
@@ -813,7 +824,7 @@
         }
 
         async function bootstrap() {
-            currentPath = 'image';
+            currentPath = '';
             pathStack = [];
             await renderCurrentDirectory();
             initDragEvents();

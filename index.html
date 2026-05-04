@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>陈风的图库</title>
+    <title>GitHub 图片浏览器 - 自动读取 image 文件夹</title>
     <style>
         * {
             margin: 0;
@@ -23,7 +23,7 @@
             margin: 0 auto;
             background: white;
             border-radius: 32px;
-            box-shadow: 0 20px 35px -12px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 20px 35px -12px rgba(0,0,0,0.1);
             overflow: hidden;
         }
 
@@ -189,6 +189,7 @@
             border-top: 1px solid #edf2f7;
         }
 
+        /* 模态框 */
         .modal {
             display: none;
             position: fixed;
@@ -196,11 +197,12 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0, 0, 0, 0.9);
-            backdrop-filter: blur(8px);
+            background-color: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(5px);
             z-index: 2000;
             justify-content: center;
             align-items: center;
+            cursor: zoom-out;
         }
 
         .modal.active {
@@ -209,45 +211,30 @@
 
         .modal-content {
             background: transparent;
-            max-width: 95vw;
-            max-height: 95vh;
+            max-width: 90vw;
+            max-height: 90vh;
             position: relative;
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
-        }
-
-        .modal-image-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            cursor: grab;
-        }
-
-        .modal-image-container:active {
-            cursor: grabbing;
         }
 
         .modal-image {
             max-width: 90vw;
-            max-height: 85vh;
+            max-height: 80vh;
             object-fit: contain;
-            transition: transform 0.05s linear;
-            transform-origin: center center;
-            user-select: none;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+            transition: transform 0.2s ease;
         }
 
         .zoom-controls {
             margin-top: 20px;
             display: flex;
             gap: 18px;
-            background: rgba(30, 30, 40, 0.8);
+            background: rgba(30,30,40,0.8);
             backdrop-filter: blur(12px);
-            padding: 10px 24px;
+            padding: 8px 20px;
             border-radius: 60px;
         }
 
@@ -275,50 +262,27 @@
             border-radius: 40px;
             cursor: pointer;
             font-weight: bold;
-            z-index: 2010;
-        }
-
-        .modal-loading {
-            position: absolute;
-            bottom: 100px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(0,0,0,0.8);
-            backdrop-filter: blur(8px);
-            color: white;
-            padding: 12px 24px;
-            border-radius: 48px;
-            font-size: 0.9rem;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            align-items: center;
-            z-index: 2100;
-            min-width: 220px;
-            text-align: center;
         }
     </style>
 </head>
 <body>
 <div class="app-container">
     <div class="toolbar">
-        <div class="brand">陈风的图库</div>
+        <div class="brand">📸 GitHub 图片墙 · 自动读取 image 文件夹</div>
         <div id="breadcrumbContainer" class="breadcrumb-area">
-            <span>加载中...</span>
+            <span>🏠 加载中...</span>
         </div>
     </div>
     <div id="galleryContainer" class="gallery">
-        <div class="loading-spinner">⏳ 正在从仓库读取目录...</div>
+        <div class="loading-spinner">⏳ 正在从仓库读取 image 文件夹...</div>
     </div>
-    <footer>点击图片放大 · 滚轮缩放 · 拖拽移动 · 支持子文件夹</footer>
+    <footer>🔍 点击图片可放大/缩放 | 支持子文件夹递归 | 自动获取像素、文件大小、最后提交时间</footer>
 </div>
 
 <div id="imageModal" class="modal">
     <div class="modal-content">
         <button class="close-modal">&times;</button>
-        <div class="modal-image-container">
-            <img id="modalImg" class="modal-image" alt="放大预览">
-        </div>
+        <img id="modalImg" class="modal-image" alt="放大预览">
         <div class="zoom-controls">
             <button id="zoomOutBtn">−</button>
             <span style="color:white; font-weight:500;">缩放</span>
@@ -328,510 +292,428 @@
 </div>
 
 <script>
-    (function(){
-        let currentRepo = { owner: 'chen-feng888', repo: 'cf-image', branch: 'main' };
-        let currentPath = '';
-        let pathStack = [];
-        let abortController = null;
-        const commitTimeCache = new Map();
-        const gallery = document.getElementById('galleryContainer');
-        const breadcrumbDiv = document.getElementById('breadcrumbContainer');
-        const modal = document.getElementById('imageModal');
-        const modalImg = document.getElementById('modalImg');
-        const closeModalBtn = document.querySelector('.close-modal');
-        const zoomInBtn = document.getElementById('zoomInBtn');
-        const zoomOutBtn = document.getElementById('zoomOutBtn');
-        let isDragging = false;
-        let dragStartX = 0, dragStartY = 0;
-        let translateX = 0, translateY = 0;
-        let currentScale = 1;
-        let currentModalImageUrl = null;
+    // ---------- 全局状态 ----------
+    let currentRepo = { owner: null, repo: null, branch: 'main' };  // 默认 branch 可自动检测
+    let currentPath = 'image';            // 当前所在的仓库路径 (相对于仓库根)
+    let pathStack = [];                   // 存储 { name, path } 用于面包屑导航
+    let currentItems = [];                // 当前展示的文件/文件夹列表
+    let abortController = null;           // 用于取消未完成的图片像素请求
+    
+    // 缓存已获取的提交时间 (避免重复请求)
+    const commitTimeCache = new Map();
 
-        function formatFileSize(bytes) {
-            if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-        }
+    // DOM 元素
+    const gallery = document.getElementById('galleryContainer');
+    const breadcrumbDiv = document.getElementById('breadcrumbContainer');
+    const modal = document.getElementById('imageModal');
+    const modalImg = document.getElementById('modalImg');
+    const closeModalBtn = document.querySelector('.close-modal');
+    const zoomInBtn = document.getElementById('zoomInBtn');
+    const zoomOutBtn = document.getElementById('zoomOutBtn');
 
-        function formatDate(timestamp) {
-            if (!timestamp) return '未知';
-            const date = new Date(timestamp);
-            return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-        }
+    let currentScale = 1;
+    let currentModalImageUrl = null;
 
-        async function fetchGitHubContents(path) {
-            const encodedPath = path ? path.split('/').map(seg => encodeURIComponent(seg)).join('/') : '';
-            const apiUrl = `https://api.github.com/repos/${currentRepo.owner}/${currentRepo.repo}/contents/${encodedPath}?ref=${currentRepo.branch}`;
-            try {
-                const response = await fetch(apiUrl);
-                if (!response.ok) {
-                    if (response.status === 404) return null;
-                    throw new Error(`API ${response.status}`);
-                }
-                const data = await response.json();
-                return Array.isArray(data) ? data : [data];
-            } catch (err) {
-                console.error(err);
-                return null;
+    // ---------- 工具函数 ----------
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function formatDate(timestamp) {
+        if (!timestamp) return '未知';
+        const date = new Date(timestamp);
+        return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
+    }
+
+    // 从当前页面 URL 解析 GitHub 仓库信息 (支持 username.github.io/repo-name 或自定义域名 + 仓库名路径)
+    function parseRepoFromURL() {
+        // 示例: https://username.github.io/repo-name/ 或 https://custom.com/repo-name/
+        const { hostname, pathname } = window.location;
+        // 标准 GitHub Pages: user.github.io/repo
+        if (hostname.endsWith('.github.io')) {
+            const parts = pathname.split('/').filter(p => p);
+            if (parts.length >= 1) {
+                const repoName = parts[0];
+                const owner = hostname.replace('.github.io', '');
+                return { owner, repo: repoName, branch: 'main' };
             }
         }
+        // 备用：如果用户部署在自己的域名下，则需要从页面路径第一个目录作为仓库名，owner 从环境变量或提示
+        // 为了通用，提供一个后备：让用户可以在控制台配置，或者直接使用默认占位（但用户会修改 index.html 填入自己的信息）
+        // 更友好：尝试从 <meta> 或 js 变量读取，这里我们让用户部署时在 HTML 中修改 owner/repo，但为了自动，可以增加提示。
+        // 由于无法完全自动，我们采用一种通用方式：从 window.__GITHUB_CONFIG 或 从 path 推断。
+        // 最后备：如果上述都失败，弹出提示要求配置。
+        console.warn('无法自动解析仓库，使用演示占位。请将下方 owner/repo 改为自己的');
+        return { owner: 'YOUR_USERNAME', repo: 'YOUR_REPO', branch: 'main' };
+    }
 
-        async function fetchFileLastCommitTime(filePath) {
-            const cacheKey = `${currentRepo.owner}/${currentRepo.repo}/${filePath}`;
-            if (commitTimeCache.has(cacheKey)) return commitTimeCache.get(cacheKey);
-            const apiUrl = `https://api.github.com/repos/${currentRepo.owner}/${currentRepo.repo}/commits?path=${encodeURIComponent(filePath)}&per_page=1`;
-            try {
-                const res = await fetch(apiUrl);
-                if (!res.ok) return null;
-                const commits = await res.json();
-                if (commits.length > 0 && commits[0].commit?.committer?.date) {
-                    const date = new Date(commits[0].commit.committer.date).getTime();
-                    commitTimeCache.set(cacheKey, date);
-                    return date;
-                }
-            } catch (e) {}
+    // 获取指定路径的目录内容 (GitHub API)
+    async function fetchGitHubContents(path) {
+        if (!currentRepo.owner || !currentRepo.repo) return null;
+        const apiUrl = `https://api.github.com/repos/${currentRepo.owner}/${currentRepo.repo}/contents/${path}?ref=${currentRepo.branch}`;
+        try {
+            const response = await fetch(apiUrl);
+            if (!response.ok) {
+                if (response.status === 404) return null;
+                throw new Error(`API 错误: ${response.status}`);
+            }
+            const data = await response.json();
+            // 如果返回的是单个文件(非数组)，则数组化
+            if (Array.isArray(data)) return data;
+            return [data];
+        } catch (err) {
+            console.error('GitHub API 请求失败:', err);
             return null;
         }
+    }
 
-        function getImageDimensions(url) {
-            return new Promise((resolve) => {
-                const img = new Image();
-                img.onload = () => resolve({ width: img.width, height: img.height });
-                img.onerror = () => resolve({ width: '?', height: '?' });
-                img.src = url;
-            });
+    // 获取某个文件最后一次提交时间 (通过 commits API)
+    async function fetchFileLastCommitTime(filePath) {
+        const cacheKey = `${currentRepo.owner}/${currentRepo.repo}/${filePath}`;
+        if (commitTimeCache.has(cacheKey)) return commitTimeCache.get(cacheKey);
+        
+        const apiUrl = `https://api.github.com/repos/${currentRepo.owner}/${currentRepo.repo}/commits?path=${encodeURIComponent(filePath)}&per_page=1`;
+        try {
+            const res = await fetch(apiUrl);
+            if (!res.ok) return null;
+            const commits = await res.json();
+            if (commits.length > 0 && commits[0].commit?.committer?.date) {
+                const date = new Date(commits[0].commit.committer.date).getTime();
+                commitTimeCache.set(cacheKey, date);
+                return date;
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    // 获取图片真实尺寸 (通过加载原始图片)
+    function getImageDimensions(url) {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve({ width: img.width, height: img.height });
+            img.onerror = () => resolve({ width: '?', height: '?' });
+            img.src = url;
+        });
+    }
+
+    // 构建图片的 raw 访问 URL
+    function getRawImageUrl(filePath) {
+        return `https://raw.githubusercontent.com/${currentRepo.owner}/${currentRepo.repo}/${currentRepo.branch}/${filePath}`;
+    }
+
+    // 渲染当前路径 (currentPath)
+    async function renderCurrentDirectory() {
+        if (!currentRepo.owner || !currentRepo.repo) {
+            gallery.innerHTML = `<div class="empty-state">⚠️ 无法自动识别 GitHub 仓库信息。<br>请在代码开头的 "parseRepoFromURL" 中手动设置 owner 和 repo。</div>`;
+            return;
         }
-
-        function getRawImageUrl(filePath) {
-            return `https://raw.githubusercontent.com/${currentRepo.owner}/${currentRepo.repo}/${currentRepo.branch}/${filePath}`;
-        }
-
-        async function autoDetectImageFolder() {
-            const rootContents = await fetchGitHubContents('');
-            if (!rootContents) return null;
-            const folders = rootContents.filter(item => item.type === 'dir').map(item => item.name.toLowerCase());
-            const preferred = ['image', 'images', 'img', 'pictures', 'photos'];
-            for (let pref of preferred) {
-                const found = rootContents.find(item => item.type === 'dir' && item.name.toLowerCase() === pref);
-                if (found) return found.path;
-            }
-            const firstFolder = rootContents.find(item => item.type === 'dir');
-            return firstFolder ? firstFolder.path : null;
-        }
-
-        async function renderCurrentDirectory() {
-            if (!currentRepo.owner || !currentRepo.repo) {
-                gallery.innerHTML = `<div class="empty-state">⚠️ 仓库配置错误</div>`;
-                return;
-            }
-            if (currentPath === '') {
-                gallery.innerHTML = `<div class="loading-spinner">🔍 正在自动查找图片文件夹...</div>`;
-                const detected = await autoDetectImageFolder();
-                if (detected) {
-                    currentPath = detected;
-                    pathStack = [];
-                    renderCurrentDirectory();
-                } else {
-                    gallery.innerHTML = `<div class="empty-state">❌ 未找到任何文件夹。<br>请在仓库根目录创建 image 或 img 文件夹并上传图片。</div>`;
-                    updateBreadcrumb();
-                }
-                return;
-            }
-            gallery.innerHTML = `<div class="loading-spinner">📂 正在加载 ${currentPath} ...</div>`;
-            if (abortController) abortController.abort();
-            abortController = new AbortController();
-
-            const contents = await fetchGitHubContents(currentPath);
-            if (!contents) {
-                gallery.innerHTML = `<div class="empty-state">❌ 无法读取文件夹 "${currentPath}"<br>请检查路径或分支</div>`;
-                updateBreadcrumb();
-                return;
-            }
-            if (contents.length === 0) {
-                gallery.innerHTML = `<div class="empty-state">📭 文件夹 "${currentPath}" 为空</div>`;
-                updateBreadcrumb();
-                return;
-            }
-
-            const folders = [];
-            const imageFiles = [];
-            const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'avif'];
-
-            for (const item of contents) {
-                if (item.type === 'dir') {
-                    folders.push({ name: item.name, path: item.path });
-                } else if (item.type === 'file') {
-                    const ext = item.name.split('.').pop().toLowerCase();
-                    if (imageExtensions.includes(ext)) {
-                        imageFiles.push({
-                            name: item.name,
-                            path: item.path,
-                            size: item.size
-                        });
-                    }
-                }
-            }
-
-            folders.sort((a, b) => a.name.localeCompare(b.name));
-            imageFiles.sort((a, b) => a.name.localeCompare(b.name));
-
-            gallery.innerHTML = '';
-            if (folders.length === 0 && imageFiles.length === 0) {
-                gallery.innerHTML = `<div class="empty-state">📭 没有子文件夹或图片文件</div>`;
-                updateBreadcrumb();
-                return;
-            }
-
-            for (const folder of folders) {
-                const card = createFolderCard(folder);
-                gallery.appendChild(card);
-            }
-            for (const imgFile of imageFiles) {
-                const card = createImageCard(imgFile);
-                gallery.appendChild(card);
-                enrichImageCard(card, imgFile);
-            }
+        
+        // 显示 loading
+        gallery.innerHTML = `<div class="loading-spinner">📂 正在加载 ${currentPath || '根目录'} ...</div>`;
+        
+        // 取消之前的图片尺寸请求 (abortController)
+        if (abortController) abortController.abort();
+        abortController = new AbortController();
+        
+        const contents = await fetchGitHubContents(currentPath);
+        if (!contents || !Array.length) {
+            gallery.innerHTML = `<div class="empty-state">📭 当前文件夹 "${currentPath}" 为空或不存在。<br>请确保仓库根目录下有 image 文件夹及图片。</div>`;
             updateBreadcrumb();
+            return;
         }
-
-        function createFolderCard(folder) {
-            const card = document.createElement('div');
-            card.className = 'card';
-            card.style.cursor = 'pointer';
-            card.innerHTML = `
-                <div class="thumb folder-thumb">📁</div>
-                <div class="card-info">
-                    <div class="file-name">${escapeHtml(folder.name)}</div>
-                    <div class="meta-list"><div class="meta-item"><span>📂 子文件夹</span><span>单击进入</span></div></div>
-                </div>
-            `;
-            card.addEventListener('click', (e) => {
-                e.stopPropagation();
-                enterSubfolder(folder.name, folder.path);
-            });
-            return card;
-        }
-
-        function createImageCard(imgFile) {
-            const card = document.createElement('div');
-            card.className = 'card';
-            const thumbDiv = document.createElement('div');
-            thumbDiv.className = 'thumb';
-            const infoDiv = document.createElement('div');
-            infoDiv.className = 'card-info';
-            infoDiv.innerHTML = `
-                <div class="file-name" title="${escapeHtml(imgFile.name)}">${escapeHtml(imgFile.name)}</div>
-                <div class="meta-list">
-                    <div class="meta-item"><span>📏 像素</span><span class="badge pixel-badge">加载中</span></div>
-                    <div class="meta-item"><span>💾 大小</span><span>${formatFileSize(imgFile.size)}</span></div>
-                    <div class="meta-item"><span>🕒 提交时间</span><span class="time-badge">获取中</span></div>
-                </div>
-            `;
-            card.appendChild(thumbDiv);
-            card.appendChild(infoDiv);
-
-            const rawUrl = getRawImageUrl(imgFile.path);
-            const SIZE_LIMIT = 2 * 1024 * 1024;
-            if (imgFile.size > SIZE_LIMIT) {
-                thumbDiv.innerHTML = `<div style="background:#fff0e0; width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:1rem;">
-                    ⚠️ 图片较大<br>(${formatFileSize(imgFile.size)})<br>点击卡片查看
-                </div>`;
-            } else {
-                thumbDiv.innerHTML = `<div style="background:#eef2ff; width:100%; height:100%; display:flex; align-items:center; justify-content:center;">🖼️ 加载预览...</div>`;
+        
+        // 分类：文件夹 和 图片文件
+        const folders = [];
+        const imageFiles = [];
+        const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'avif'];
+        
+        for (const item of contents) {
+            if (item.type === 'dir') {
+                folders.push({ name: item.name, path: item.path, sha: item.sha });
+            } else if (item.type === 'file') {
+                const ext = item.name.split('.').pop().toLowerCase();
+                if (imageExtensions.includes(ext)) {
+                    imageFiles.push({
+                        name: item.name,
+                        path: item.path,
+                        size: item.size,
+                        download_url: item.download_url,
+                        sha: item.sha
+                    });
+                }
             }
-            card.addEventListener('click', (e) => {
-                e.stopPropagation();
-                openModalWithImage(rawUrl, imgFile.name, imgFile.size);
-            });
-            return card;
         }
-
-        async function enrichImageCard(card, imgFile) {
-            const SIZE_LIMIT = 2 * 1024 * 1024;
+        
+        folders.sort((a,b) => a.name.localeCompare(b.name));
+        imageFiles.sort((a,b) => a.name.localeCompare(b.name));
+        
+        gallery.innerHTML = '';
+        if (folders.length === 0 && imageFiles.length === 0) {
+            gallery.innerHTML = `<div class="empty-state">📭 此文件夹中没有子文件夹或图片文件。</div>`;
+            updateBreadcrumb();
+            return;
+        }
+        
+        // 渲染文件夹卡片
+        for (const folder of folders) {
+            const card = createFolderCard(folder);
+            gallery.appendChild(card);
+        }
+        
+        // 渲染图片卡片 (异步补全像素和提交时间)
+        for (const imgFile of imageFiles) {
+            const card = createImageCard(imgFile);
+            gallery.appendChild(card);
+            // 异步加载详细元数据，但不阻塞渲染
+            enrichImageCard(card, imgFile);
+        }
+        
+        updateBreadcrumb();
+    }
+    
+    function createFolderCard(folder) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.style.cursor = 'pointer';
+        card.innerHTML = `
+            <div class="thumb folder-thumb">📁</div>
+            <div class="card-info">
+                <div class="file-name">${escapeHtml(folder.name)}</div>
+                <div class="meta-list"><div class="meta-item"><span>📂 子文件夹</span><span>单击进入</span></div></div>
+            </div>
+        `;
+        card.addEventListener('click', (e) => {
+            e.stopPropagation();
+            enterSubfolder(folder.name, folder.path);
+        });
+        return card;
+    }
+    
+    function createImageCard(imgFile) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        // 缩略图先放占位
+        const thumbDiv = document.createElement('div');
+        thumbDiv.className = 'thumb';
+        thumbDiv.innerHTML = `<div style="background:#eef2ff; width:100%; height:100%; display:flex; align-items:center; justify-content:center;">🖼️ 加载中</div>`;
+        
+        const infoDiv = document.createElement('div');
+        infoDiv.className = 'card-info';
+        infoDiv.innerHTML = `
+            <div class="file-name" title="${escapeHtml(imgFile.name)}">${escapeHtml(imgFile.name)}</div>
+            <div class="meta-list">
+                <div class="meta-item"><span>📏 像素</span><span class="badge pixel-badge">读取中</span></div>
+                <div class="meta-item"><span>💾 大小</span><span>${formatFileSize(imgFile.size)}</span></div>
+                <div class="meta-item"><span>🕒 提交时间</span><span class="time-badge">获取中</span></div>
+            </div>
+        `;
+        card.appendChild(thumbDiv);
+        card.appendChild(infoDiv);
+        
+        // 点击放大
+        const rawUrl = getRawImageUrl(imgFile.path);
+        card.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openModalWithImage(rawUrl, imgFile.name);
+        });
+        
+        // 存储临时数据以便异步填充
+        card.__imgData = imgFile;
+        return card;
+    }
+    
+    async function enrichImageCard(card, imgFile) {
+        try {
+            // 加载缩略图
             const rawUrl = getRawImageUrl(imgFile.path);
             const thumbDiv = card.querySelector('.thumb');
-            if (imgFile.size <= SIZE_LIMIT) {
-                try {
-                    const imgElement = document.createElement('img');
-                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('超时')), 10000));
-                    const loadPromise = new Promise((resolve, reject) => {
-                        imgElement.onload = resolve;
-                        imgElement.onerror = reject;
-                        imgElement.src = rawUrl;
-                    });
-                    await Promise.race([loadPromise, timeoutPromise]);
-                    thumbDiv.innerHTML = '';
-                    thumbDiv.appendChild(imgElement);
-                } catch (err) {
-                    thumbDiv.innerHTML = `<div style="background:#ffebee; width:100%; height:100%; display:flex; align-items:center; justify-content:center;">预览失败</div>`;
-                }
-            }
-            try {
-                const dimPromise = getImageDimensions(rawUrl);
-                const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('像素获取超时')), 8000));
-                const dims = await Promise.race([dimPromise, timeout]);
-                const pixelSpan = card.querySelector('.pixel-badge');
-                if (pixelSpan) pixelSpan.innerText = `${dims.width} × ${dims.height}`;
-            } catch (e) {
-                const pixelSpan = card.querySelector('.pixel-badge');
-                if (pixelSpan) pixelSpan.innerText = '超时/失败';
-            }
+            const imgElement = document.createElement('img');
+            imgElement.src = rawUrl;
+            imgElement.alt = imgFile.name;
+            imgElement.style.width = '100%';
+            imgElement.style.height = '100%';
+            imgElement.style.objectFit = 'cover';
+            thumbDiv.innerHTML = '';
+            thumbDiv.appendChild(imgElement);
+            
+            // 获取图片像素
+            const dims = await getImageDimensions(rawUrl);
+            const pixelSpan = card.querySelector('.pixel-badge');
+            if (pixelSpan) pixelSpan.innerText = `${dims.width} × ${dims.height}`;
+            
+            // 获取最后提交时间
             const commitTime = await fetchFileLastCommitTime(imgFile.path);
             const timeSpan = card.querySelector('.time-badge');
-            if (timeSpan) timeSpan.innerText = commitTime ? formatDate(commitTime) : '未知';
-        }
-
-        function enterSubfolder(folderName, folderPath) {
-            pathStack.push({ name: getDisplayNameFromPath(currentPath), path: currentPath });
-            currentPath = folderPath;
-            renderCurrentDirectory();
-        }
-
-        function getDisplayNameFromPath(path) {
-            const parts = path.split('/');
-            return parts[parts.length - 1];
-        }
-
-        function updateBreadcrumb() {
-            if (!currentPath) {
-                breadcrumbDiv.innerHTML = '<span>📁 未选择</span>';
-                return;
+            if (timeSpan) {
+                if (commitTime) timeSpan.innerText = formatDate(commitTime);
+                else timeSpan.innerText = '未知';
             }
-            const parts = currentPath.split('/');
-            let fullSegments = [];
-            let cumulative = '';
-            for (let i = 0; i < parts.length; i++) {
-                cumulative = i === 0 ? parts[i] : cumulative + '/' + parts[i];
-                fullSegments.push({ name: parts[i], path: cumulative });
+        } catch (err) {
+            console.warn('加载图片元数据失败', imgFile.path);
+            const pixelSpan = card.querySelector('.pixel-badge');
+            if (pixelSpan) pixelSpan.innerText = '加载失败';
+        }
+    }
+    
+    // 进入子文件夹
+    function enterSubfolder(folderName, folderPath) {
+        // 保存当前路径到栈
+        pathStack.push({ name: getDisplayNameFromPath(currentPath), path: currentPath });
+        currentPath = folderPath;
+        renderCurrentDirectory();
+    }
+    
+    // 根据路径获取显示名称 (最后一段)
+    function getDisplayNameFromPath(path) {
+        if (!path || path === 'image') return 'image';
+        const parts = path.split('/');
+        return parts[parts.length-1];
+    }
+    
+    // 面包屑导航
+    function updateBreadcrumb() {
+        // 构建路径层次: 从根 "image" 开始，加上 stack 中的各级
+        let fullSegments = [];
+        if (currentPath === 'image') {
+            fullSegments = [{ name: 'image', path: 'image' }];
+        } else {
+            // 根是 image
+            fullSegments.push({ name: 'image', path: 'image' });
+            // 中间部分
+            const relativePath = currentPath.replace(/^image\//, '');
+            const parts = relativePath.split('/');
+            let cumulative = 'image';
+            for (let part of parts) {
+                cumulative += '/' + part;
+                fullSegments.push({ name: part, path: cumulative });
             }
-            let html = '';
-            for (let i = 0; i < fullSegments.length; i++) {
-                const seg = fullSegments[i];
-                if (i === fullSegments.length - 1) {
-                    html += `<span style="font-weight:600;">📁 ${escapeHtml(seg.name)}</span>`;
-                } else {
-                    html += `<span class="breadcrumb-item" data-path="${seg.path}">${escapeHtml(seg.name)}</span><span class="separator"> › </span>`;
-                }
+        }
+        
+        let html = '';
+        for (let i = 0; i < fullSegments.length; i++) {
+            const seg = fullSegments[i];
+            if (i === fullSegments.length - 1) {
+                html += `<span style="font-weight:600;">📁 ${escapeHtml(seg.name)}</span>`;
+            } else {
+                html += `<span class="breadcrumb-item" data-path="${seg.path}">${escapeHtml(seg.name)}</span><span class="separator"> › </span>`;
             }
-            breadcrumbDiv.innerHTML = html;
-            document.querySelectorAll('.breadcrumb-item').forEach(el => {
-                el.addEventListener('click', async (e) => {
-                    const targetPath = el.getAttribute('data-path');
-                    if (targetPath && targetPath !== currentPath) {
+        }
+        breadcrumbDiv.innerHTML = html || '<span>📁 image</span>';
+        
+        // 绑定面包屑点击
+        document.querySelectorAll('.breadcrumb-item').forEach(el => {
+            el.addEventListener('click', async (e) => {
+                const targetPath = el.getAttribute('data-path');
+                if (targetPath && targetPath !== currentPath) {
+                    // 需要重新构造 pathStack: 根据目标路径重新生成栈
+                    // 简化: 直接设置 currentPath 并清空 pathStack 中多余部分
+                    if (targetPath === 'image') {
                         pathStack = [];
-                        currentPath = targetPath;
-                        await renderCurrentDirectory();
-                    }
-                });
-            });
-        }
-
-        async function openModalWithImage(imageUrl, fileName, fileSize = 0) {
-            if (currentModalImageUrl) {
-                if (currentModalImageUrl.startsWith('blob:')) URL.revokeObjectURL(currentModalImageUrl);
-                currentModalImageUrl = null;
-            }
-            modal.classList.add('active');
-            modalImg.style.display = 'none';
-            modalImg.src = '';
-
-            let loadingDiv = document.querySelector('.modal-loading');
-            if (!loadingDiv) {
-                loadingDiv = document.createElement('div');
-                loadingDiv.className = 'modal-loading';
-                const contentDiv = document.querySelector('.modal-content');
-                contentDiv.appendChild(loadingDiv);
-            }
-            loadingDiv.style.display = 'flex';
-            const statusSpan = document.createElement('span');
-            const retryBtn = document.createElement('button');
-            retryBtn.textContent = '🔄 重试';
-            retryBtn.style.background = 'white';
-            retryBtn.style.border = 'none';
-            retryBtn.style.padding = '6px 14px';
-            retryBtn.style.borderRadius = '40px';
-            retryBtn.style.cursor = 'pointer';
-            retryBtn.style.marginTop = '6px';
-            retryBtn.style.fontWeight = 'bold';
-            retryBtn.style.display = 'none';
-            loadingDiv.innerHTML = '';
-            loadingDiv.appendChild(statusSpan);
-            loadingDiv.appendChild(retryBtn);
-
-            let retryCount = 0;
-            const MAX_RETRY = 2;
-            const loadImage = async () => {
-                statusSpan.textContent = `⏳ 正在加载 (0%) ... ${formatFileSize(fileSize)}`;
-                retryBtn.style.display = 'none';
-                try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 60000);
-                    const response = await fetch(imageUrl, { signal: controller.signal });
-                    clearTimeout(timeoutId);
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                    const contentLength = response.headers.get('content-length');
-                    const total = contentLength ? parseInt(contentLength, 10) : fileSize;
-                    const reader = response.body.getReader();
-                    let receivedLength = 0;
-                    const chunks = [];
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        chunks.push(value);
-                        receivedLength += value.length;
-                        const percent = total ? Math.round((receivedLength / total) * 100) : receivedLength / 1024;
-                        statusSpan.textContent = `📥 加载中 ${percent}% (${formatFileSize(receivedLength)} / ${formatFileSize(total)})`;
-                    }
-                    const blob = new Blob(chunks);
-                    const objectUrl = URL.createObjectURL(blob);
-                    const img = new Image();
-                    await new Promise((resolve, reject) => {
-                        img.onload = () => resolve();
-                        img.onerror = () => reject(new Error('解码失败'));
-                        img.src = objectUrl;
-                        setTimeout(() => reject(new Error('解码超时')), 15000);
-                    });
-                    modalImg.src = objectUrl;
-                    currentScale = 1;
-                    translateX = 0;
-                    translateY = 0;
-                    updateImageTransform();
-                    modalImg.style.display = 'block';
-                    currentModalImageUrl = objectUrl;
-                    loadingDiv.style.display = 'none';
-                } catch (err) {
-                    if (retryCount < MAX_RETRY) {
-                        retryCount++;
-                        statusSpan.textContent = `⚠️ 加载失败 (${retryCount}/${MAX_RETRY})，正在重试...`;
-                        setTimeout(() => loadImage(), 1000);
+                        currentPath = 'image';
                     } else {
-                        statusSpan.textContent = `❌ 加载失败，请检查网络或图片资源`;
-                        retryBtn.style.display = 'inline-block';
-                        retryBtn.onclick = () => {
-                            retryCount = 0;
-                            loadImage();
-                        };
+                        // 计算上级栈: targetPath 的父级应该记录
+                        const parts = targetPath.split('/');
+                        // 栈中不包含当前项，只包含上级
+                        pathStack = [];
+                        let cumulative = 'image';
+                        for (let i = 1; i < parts.length; i++) { // 跳过第一个 'image'
+                            if (i < parts.length - 1) {
+                                pathStack.push({ name: parts[i], path: cumulative });
+                            }
+                            cumulative += '/' + parts[i];
+                        }
+                        currentPath = targetPath;
                     }
+                    await renderCurrentDirectory();
                 }
-            };
-            loadImage();
+            });
+        });
+    }
+    
+    // ---------- 模态框放大支持 ----------
+    function openModalWithImage(imageUrl, fileName) {
+        if (currentModalImageUrl) URL.revokeObjectURL(currentModalImageUrl);
+        modalImg.src = imageUrl;
+        currentScale = 1;
+        modalImg.style.transform = `scale(1)`;
+        modal.classList.add('active');
+        currentModalImageUrl = imageUrl; // 纯 URL 无需 revoke
+    }
+    
+    function closeModal() {
+        modal.classList.remove('active');
+    }
+    
+    function zoomModal(delta) {
+        if (!modal.classList.contains('active')) return;
+        let newScale = currentScale + delta;
+        newScale = Math.min(3.5, Math.max(0.8, newScale));
+        currentScale = newScale;
+        modalImg.style.transform = `scale(${currentScale})`;
+    }
+    
+    // 转义HTML
+    function escapeHtml(str) {
+        if (!str) return '';
+        return str.replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        }).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(c) {
+            return c;
+        });
+    }
+    
+    // 初始化仓库信息
+    function initRepoConfig() {
+        // 自动解析 (若失败，用户可手动修改)
+        const auto = parseRepoFromURL();
+        if (auto.owner && auto.owner !== 'YOUR_USERNAME' && auto.repo && auto.repo !== 'YOUR_REPO') {
+            currentRepo = auto;
+            console.log(`自动识别仓库: ${currentRepo.owner}/${currentRepo.repo}`);
+        } else {
+            // 降级: 提示但仍旧显示默认占位 (实际需要用户手动修改 index.html 中的这部分)
+            // 为了演示，提供一个配置窗口或者直接提示。
+            // 更好的办法：在控制台输出指引，并保留 image 路径演示但无法加载。
+            gallery.innerHTML = `<div class="empty-state">⚠️ 无法自动解析 GitHub 仓库信息。<br>请确保您部署在标准 GitHub Pages (username.github.io/reponame) 下，<br>或者手动修改代码中的 currentRepo 对象。</div>`;
+            return false;
         }
-
-        function updateImageTransform() {
-            modalImg.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
-        }
-
-        function initDragEvents() {
-            const imgEl = modalImg;
-            if (!imgEl) return;
-            const onMouseDown = (e) => {
-                if (currentScale <= 1.0) return;
+        return true;
+    }
+    
+    // 启动
+    async function bootstrap() {
+        if (!initRepoConfig()) return;
+        // 检查仓库下 image 文件夹是否存在，若不存在则友好提示
+        currentPath = 'image';
+        pathStack = [];
+        await renderCurrentDirectory();
+    }
+    
+    // 模态框事件
+    function bindModalEvents() {
+        closeModalBtn.addEventListener('click', closeModal);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) closeModal();
+        });
+        zoomInBtn.addEventListener('click', () => zoomModal(0.2));
+        zoomOutBtn.addEventListener('click', () => zoomModal(-0.2));
+        modal.addEventListener('wheel', (e) => {
+            if (modal.classList.contains('active')) {
                 e.preventDefault();
-                isDragging = true;
-                dragStartX = e.clientX - translateX;
-                dragStartY = e.clientY - translateY;
-                modalImg.style.cursor = 'grabbing';
-            };
-            const onMouseMove = (e) => {
-                if (!isDragging) return;
-                e.preventDefault();
-                translateX = e.clientX - dragStartX;
-                translateY = e.clientY - dragStartY;
-                updateImageTransform();
-            };
-            const onMouseUp = () => {
-                isDragging = false;
-                modalImg.style.cursor = 'grab';
-            };
-            imgEl.addEventListener('mousedown', onMouseDown);
-            window.addEventListener('mousemove', onMouseMove);
-            window.addEventListener('mouseup', onMouseUp);
-            imgEl.addEventListener('touchstart', (e) => {
-                if (currentScale <= 1.0) return;
-                e.preventDefault();
-                const touch = e.touches[0];
-                isDragging = true;
-                dragStartX = touch.clientX - translateX;
-                dragStartY = touch.clientY - translateY;
-            });
-            window.addEventListener('touchmove', (e) => {
-                if (!isDragging) return;
-                e.preventDefault();
-                const touch = e.touches[0];
-                translateX = touch.clientX - dragStartX;
-                translateY = touch.clientY - dragStartY;
-                updateImageTransform();
-            });
-            window.addEventListener('touchend', () => {
-                isDragging = false;
-            });
-            imgEl.addEventListener('dblclick', (e) => {
-                e.stopPropagation();
-                currentScale = 1;
-                translateX = 0;
-                translateY = 0;
-                updateImageTransform();
-            });
-        }
-
-        function closeModal() {
-            modal.classList.remove('active');
-            isDragging = false;
-            currentScale = 1;
-            translateX = 0;
-            translateY = 0;
-            if (modalImg) updateImageTransform();
-            if (currentModalImageUrl && currentModalImageUrl.startsWith('blob:')) {
-                URL.revokeObjectURL(currentModalImageUrl);
-                currentModalImageUrl = null;
+                const delta = e.deltaY > 0 ? -0.1 : 0.1;
+                zoomModal(delta);
             }
-        }
-
-        function zoomModal(delta) {
-            if (!modal.classList.contains('active')) return;
-            let newScale = currentScale + delta;
-            newScale = Math.min(3.5, Math.max(0.8, newScale));
-            currentScale = newScale;
-            updateImageTransform();
-        }
-
-        function escapeHtml(str) {
-            if (!str) return '';
-            return str.replace(/[&<>]/g, function(m) {
-                if (m === '&') return '&amp;';
-                if (m === '<') return '&lt;';
-                if (m === '>') return '&gt;';
-                return m;
-            });
-        }
-
-        function bindModalEvents() {
-            closeModalBtn.addEventListener('click', closeModal);
-            modal.addEventListener('click', (e) => {
-                if (e.target === modal) closeModal();
-            });
-            zoomInBtn.addEventListener('click', () => zoomModal(0.2));
-            zoomOutBtn.addEventListener('click', () => zoomModal(-0.2));
-            modal.addEventListener('wheel', (e) => {
-                if (modal.classList.contains('active')) {
-                    e.preventDefault();
-                    const delta = e.deltaY > 0 ? -0.1 : 0.1;
-                    zoomModal(delta);
-                }
-            }, { passive: false });
-        }
-
-        async function bootstrap() {
-            currentPath = '';
-            pathStack = [];
-            await renderCurrentDirectory();
-            initDragEvents();
-            bindModalEvents();
-        }
-        bootstrap();
-    })();
+        }, { passive: false });
+    }
+    
+    bindModalEvents();
+    bootstrap();
 </script>
 </body>
 </html>

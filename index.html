@@ -218,15 +218,26 @@
             display: flex;
             flex-direction: column;
             align-items: center;
+            overflow: hidden;
+            cursor: grab;
+        }
+
+        .modal-content:active {
+            cursor: grabbing;
         }
 
         .modal-image {
-            max-width: 90vw;
+            max-width: 100%;
             max-height: 80vh;
             object-fit: contain;
-            border-radius: 20px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
-            transition: transform 0.2s ease;
+            transition: transform 0.05s linear;
+            transform: scale(1) translate(0px, 0px);
+            transform-origin: center center;
+            cursor: grab;
+        }
+
+        .modal-image:active {
+            cursor: grabbing;
         }
 
         .zoom-controls {
@@ -284,7 +295,9 @@
     <div id="imageModal" class="modal">
         <div class="modal-content">
             <button class="close-modal">&times;</button>
-            <img id="modalImg" class="modal-image" alt="放大预览">
+            <div class="modal-image-container">
+                <img id="modalImg" class="modal-image" alt="放大预览">
+            </div>
             <div class="zoom-controls">
                 <button id="zoomOutBtn">−</button>
                 <span style="color:white; font-weight:500;">缩放</span>
@@ -307,7 +320,9 @@
         const closeModalBtn = document.querySelector('.close-modal');
         const zoomInBtn = document.getElementById('zoomInBtn');
         const zoomOutBtn = document.getElementById('zoomOutBtn');
-
+        let isDragging = false;
+        let dragStartX = 0, dragStartY = 0;
+        let translateX = 0, translateY = 0;
         let currentScale = 1;
         let currentModalImageUrl = null;
         function formatFileSize(bytes) {
@@ -325,7 +340,6 @@
         }
         function parseRepoFromURL() {
             const { hostname, pathname } = window.location;
-            // 标准 GitHub Pages: user.github.io/repo
             if (hostname.endsWith('.github.io')) {
                 const parts = pathname.split('/').filter(p => p);
                 if (parts.length >= 1) {
@@ -602,8 +616,6 @@
                 });
             });
         }
-
-        // 大图加载：使用 fetch + Blob，支持超时、重试、进度提示
         async function openModalWithImage(imageUrl, fileName, fileSize = 0) {
             if (currentModalImageUrl) {
                 if (currentModalImageUrl.startsWith('blob:')) URL.revokeObjectURL(currentModalImageUrl);
@@ -611,10 +623,9 @@
             }
 
             modal.classList.add('active');
-            modalImg.style.display = 'none'; // 先隐藏图片
+            modalImg.style.display = 'none';
             modalImg.src = '';
 
-            // 创建加载提示容器
             let loadingDiv = document.querySelector('.modal-loading');
             if (!loadingDiv) {
                 loadingDiv = document.createElement('div');
@@ -698,6 +709,10 @@
                     });
 
                     modalImg.src = objectUrl;
+                    currentScale = 1;
+                    translateX = 0;
+                    translateY = 0;
+                    updateImageTransform();
                     modalImg.style.display = 'block';
                     currentModalImageUrl = objectUrl;
                     loadingDiv.style.display = 'none';
@@ -723,9 +738,78 @@
 
             loadImage();
         }
+        function initDragEvents() {
+            const imgEl = modalImg;
+            if (!imgEl) return;
 
+            const onMouseDown = (e) => {
+                if (currentScale <= 1.0) return;
+                e.preventDefault();
+                isDragging = true;
+                dragStartX = e.clientX - translateX;
+                dragStartY = e.clientY - translateY;
+                modalImg.style.cursor = 'grabbing';
+            };
+
+            const onMouseMove = (e) => {
+                if (!isDragging) return;
+                e.preventDefault();
+                translateX = e.clientX - dragStartX;
+                translateY = e.clientY - dragStartY;
+                updateImageTransform();
+            };
+
+            const onMouseUp = () => {
+                isDragging = false;
+                modalImg.style.cursor = 'grab';
+            };
+
+            imgEl.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+
+            imgEl.addEventListener('touchstart', (e) => {
+                if (currentScale <= 1.0) return;
+                e.preventDefault();
+                const touch = e.touches[0];
+                isDragging = true;
+                dragStartX = touch.clientX - translateX;
+                dragStartY = touch.clientY - translateY;
+            });
+            window.addEventListener('touchmove', (e) => {
+                if (!isDragging) return;
+                e.preventDefault();
+                const touch = e.touches[0];
+                translateX = touch.clientX - dragStartX;
+                translateY = touch.clientY - dragStartY;
+                updateImageTransform();
+            });
+            window.addEventListener('touchend', () => {
+                isDragging = false;
+            });
+
+            imgEl.addEventListener('dblclick', (e) => {
+                e.stopPropagation();
+                currentScale = 1;
+                translateX = 0;
+                translateY = 0;
+                updateImageTransform();
+            });
+        }
+        function updateImageTransform() {
+            modalImg.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
+        }
         function closeModal() {
             modal.classList.remove('active');
+            isDragging = false;
+            currentScale = 1;
+            translateX = 0;
+            translateY = 0;
+            if (modalImg) updateImageTransform();
+            if (window.__currentModalUrl) {
+                URL.revokeObjectURL(window.__currentModalUrl);
+                window.__currentModalUrl = null;
+            }
         }
 
         function zoomModal(delta) {
@@ -733,7 +817,7 @@
             let newScale = currentScale + delta;
             newScale = Math.min(3.5, Math.max(0.8, newScale));
             currentScale = newScale;
-            modalImg.style.transform = `scale(${currentScale})`;
+            modalImg.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
         }
         function escapeHtml(str) {
             if (!str) return '';

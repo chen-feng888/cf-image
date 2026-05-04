@@ -512,30 +512,27 @@
             if (imgFile.size <= SIZE_LIMIT) {
                 try {
                     const imgElement = document.createElement('img');
-                    imgElement.src = rawUrl;
-                    imgElement.alt = imgFile.name;
-                    imgElement.style.width = '100%';
-                    imgElement.style.height = '100%';
-                    imgElement.style.objectFit = 'cover';
-                    thumbDiv.innerHTML = '';
-                    thumbDiv.appendChild(imgElement);
-
-                    await new Promise((resolve, reject) => {
+                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('超时')), 10000));
+                    const loadPromise = new Promise((resolve, reject) => {
                         imgElement.onload = resolve;
                         imgElement.onerror = reject;
-                        setTimeout(() => reject(new Error('加载超时')), 15000);
+                        imgElement.src = rawUrl;
                     });
+                    await Promise.race([loadPromise, timeoutPromise]);
+                    thumbDiv.innerHTML = '';
+                    thumbDiv.appendChild(imgElement);
                 } catch (err) {
-                    thumbDiv.innerHTML = `<div style="background:#ffebee; width:100%; height:100%; display:flex; align-items:center; justify-content:center;">❌ 预览失败</div>`;
+                    thumbDiv.innerHTML = `<div style="background:#ffebee; width:100%; height:100%; display:flex; align-items:center; justify-content:center;">预览失败</div>`;
                 }
             }
-
             try {
-                const dims = await getImageDimensions(rawUrl);
+                const dimPromise = getImageDimensions(rawUrl);
+                const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('像素获取超时')), 8000));
+                const dims = await Promise.race([dimPromise, timeout]);
                 const pixelSpan = card.querySelector('.pixel-badge');
                 if (pixelSpan) pixelSpan.innerText = `${dims.width} × ${dims.height}`;
             } catch (e) {
-                card.querySelector('.pixel-badge').innerText = '获取失败';
+                card.querySelector('.pixel-badge').innerText = '超时/失败';
             }
 
             const commitTime = await fetchFileLastCommitTime(imgFile.path);
@@ -606,48 +603,125 @@
             });
         }
 
-        function openModalWithImage(imageUrl, fileName, fileSize = 0) {
+        // 大图加载：使用 fetch + Blob，支持超时、重试、进度提示
+        async function openModalWithImage(imageUrl, fileName, fileSize = 0) {
             if (currentModalImageUrl) {
                 if (currentModalImageUrl.startsWith('blob:')) URL.revokeObjectURL(currentModalImageUrl);
+                currentModalImageUrl = null;
             }
-            modal.classList.add('active');
-            modalImg.src = '';
-            const loadingDiv = document.createElement('div');
-            loadingDiv.className = 'modal-loading';
-            loadingDiv.innerText = `正在加载... (${formatFileSize(fileSize)})`;
-            loadingDiv.style.position = 'absolute';
-            loadingDiv.style.bottom = '80px';
-            loadingDiv.style.background = 'rgba(0,0,0,0.7)';
-            loadingDiv.style.color = 'white';
-            loadingDiv.style.padding = '8px 16px';
-            loadingDiv.style.borderRadius = '40px';
-            loadingDiv.style.fontSize = '0.8rem';
-            document.querySelector('.modal-content').appendChild(loadingDiv);
 
-            const img = new Image();
-            let timeoutId = setTimeout(() => {
-                if (!modalImg.src) {
-                    img.src = '';
-                    loadingDiv.innerText = '加载超时，点击图片区域重试';
-                    loadingDiv.style.cursor = 'pointer';
-                    loadingDiv.onclick = () => openModalWithImage(imageUrl, fileName, fileSize);
+            modal.classList.add('active');
+            modalImg.style.display = 'none'; // 先隐藏图片
+            modalImg.src = '';
+
+            // 创建加载提示容器
+            let loadingDiv = document.querySelector('.modal-loading');
+            if (!loadingDiv) {
+                loadingDiv = document.createElement('div');
+                loadingDiv.className = 'modal-loading';
+                const contentDiv = document.querySelector('.modal-content');
+                contentDiv.appendChild(loadingDiv);
+            }
+            loadingDiv.style.display = 'flex';
+            loadingDiv.style.flexDirection = 'column';
+            loadingDiv.style.alignItems = 'center';
+            loadingDiv.style.gap = '12px';
+            loadingDiv.style.background = 'rgba(0,0,0,0.8)';
+            loadingDiv.style.color = 'white';
+            loadingDiv.style.padding = '16px 24px';
+            loadingDiv.style.borderRadius = '48px';
+            loadingDiv.style.fontSize = '0.9rem';
+            loadingDiv.style.position = 'absolute';
+            loadingDiv.style.bottom = '100px';
+            loadingDiv.style.left = '50%';
+            loadingDiv.style.transform = 'translateX(-50%)';
+            loadingDiv.style.zIndex = '2100';
+            loadingDiv.style.minWidth = '220px';
+            loadingDiv.style.textAlign = 'center';
+            loadingDiv.style.backdropFilter = 'blur(8px)';
+
+            // 显示进度文本和重试按钮
+            const statusSpan = document.createElement('span');
+            const retryBtn = document.createElement('button');
+            retryBtn.textContent = '🔄 重试';
+            retryBtn.style.background = 'white';
+            retryBtn.style.border = 'none';
+            retryBtn.style.padding = '6px 14px';
+            retryBtn.style.borderRadius = '40px';
+            retryBtn.style.cursor = 'pointer';
+            retryBtn.style.marginTop = '6px';
+            retryBtn.style.fontWeight = 'bold';
+            retryBtn.style.display = 'none';
+            loadingDiv.innerHTML = '';
+            loadingDiv.appendChild(statusSpan);
+            loadingDiv.appendChild(retryBtn);
+
+            let retryCount = 0;
+            const MAX_RETRY = 2;
+
+            const loadImage = async () => {
+                statusSpan.textContent = `⏳ 正在加载 (0%) ... ${formatFileSize(fileSize)}`;
+                retryBtn.style.display = 'none';
+
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+                    const response = await fetch(imageUrl, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                    const contentLength = response.headers.get('content-length');
+                    const total = contentLength ? parseInt(contentLength, 10) : fileSize;
+
+                    const reader = response.body.getReader();
+                    let receivedLength = 0;
+                    const chunks = [];
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        chunks.push(value);
+                        receivedLength += value.length;
+                        const percent = total ? Math.round((receivedLength / total) * 100) : receivedLength / 1024;
+                        statusSpan.textContent = `📥 加载中 ${percent}% (${formatFileSize(receivedLength)} / ${formatFileSize(total)})`;
+                    }
+
+                    const blob = new Blob(chunks);
+                    const objectUrl = URL.createObjectURL(blob);
+                    const img = new Image();
+                    await new Promise((resolve, reject) => {
+                        img.onload = () => resolve();
+                        img.onerror = () => reject(new Error('图片解码失败'));
+                        img.src = objectUrl;
+                        setTimeout(() => reject(new Error('解码超时')), 15000);
+                    });
+
+                    modalImg.src = objectUrl;
+                    modalImg.style.display = 'block';
+                    currentModalImageUrl = objectUrl;
+                    loadingDiv.style.display = 'none';
+                    currentScale = 1;
+                    modalImg.style.transform = `scale(1)`;
+
+                } catch (err) {
+                    console.error('加载失败:', err);
+                    if (retryCount < MAX_RETRY) {
+                        retryCount++;
+                        statusSpan.textContent = `⚠️ 加载失败 (${retryCount}/${MAX_RETRY})，正在重试...`;
+                        setTimeout(() => loadImage(), 1000);
+                    } else {
+                        statusSpan.textContent = `❌ 加载失败，请检查网络或图片资源`;
+                        retryBtn.style.display = 'inline-block';
+                        retryBtn.onclick = () => {
+                            retryCount = 0;
+                            loadImage();
+                        };
+                    }
                 }
-            }, 30000);
-            img.onload = () => {
-                clearTimeout(timeoutId);
-                modalImg.src = imageUrl;
-                currentScale = 1;
-                modalImg.style.transform = `scale(1)`;
-                loadingDiv.remove();
-                currentModalImageUrl = imageUrl;
             };
-            img.onerror = () => {
-                clearTimeout(timeoutId);
-                loadingDiv.innerText = '❌ 加载失败，点击重试';
-                loadingDiv.style.cursor = 'pointer';
-                loadingDiv.onclick = () => openModalWithImage(imageUrl, fileName, fileSize);
-            };
-            img.src = imageUrl;
+
+            loadImage();
         }
 
         function closeModal() {
